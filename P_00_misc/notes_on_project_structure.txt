@@ -1,0 +1,68 @@
+--------------------------------------------------------------------------------
+
+Single Top-Level Entry:
+Python code is designed to be executed from a single top-level entry point (script, notebook, or file run as python -m package.module). All other modules are meant to be imported, not run directly.
+
+Absolute Imports:
+Absolute imports reference modules from a known root (e.g., src/ or installed package). They can technically work anywhere if the root is included in sys.path, but running arbitrary files directly may require path hacks. These do work, if a strict "top down hierarchical" import structure is obeyed. This means that any file would only be able to import stuff from sibling files or folders - but not higher.
+
+Relative Imports:
+Relative imports (from ..subpackage import module) operate strictly within a package hierarchy. They allow sideways or upward imports but cannot be used if the module is executed as a script, because Python cannot infer the parent package.
+Since any relative import would at least include "." - the parent folder - it won't work since the parent folder is never available when a file is run as a script. 
+However, if the main entry point (ususally in the top directory) executes another lower file, the whole package will be available as sys.path, so all the relative imports work
+
+Script/Notebook Context:
+Scripts and notebooks are entry points; they establish the execution context. Relative imports inside modules only work when invoked within this context, never when modules are executed directly.
+
+Hierarchical Visibility:
+Modules can always import “downward” within their own folder or subfolders. Imports across sibling or parent packages require relative imports (or absolute imports from the root) and cannot be executed freely as standalone scripts.
+
+--------------------------------------------------------------------------------
+
+GENERAL PRINCIPLE
+Use one consistent entry point (script or python -m package).
+You can run files directly, but it often breaks imports. Always prefer running as a module.
+
+ABSOLUTE IMPORTS
+Form:
+import package.module
+from package import module
+
+Most reliable import style.
+Works when the project root is on sys.path (e.g. installed or run via -m).
+Preferred for real projects and libraries.
+
+RELATIVE IMPORTS
+Form:
+from .submodule import X
+from ..utils import Y
+
+Only works when Python knows the package context.
+Fails if the file is run directly (e.g., python package/module.py).
+Always run via module mode if using relative imports:
+python -m package.module
+
+RUNNING FILES
+Never do:
+python package/module.py (breaks relative imports)
+Do:
+python -m package.module (correct package context)
+
+SCRIPTS & NOTEBOOKS
+Act as entry points (not package modules).
+To import package code:
+install in editable mode: pip install -e .
+or run from project root
+
+IMPORT VISIBILITY
+Imports downward into subpackages always allowed.
+Imports sideways/upward require:
+relative imports, AND
+package context (python -m package.module)
+
+PATH RULES
+Avoid modifying sys.path in library code.
+For notebooks or ad-hoc scripts, editable install is best.
+If necessary, add project root explicitly in notebook/scripts (not recommended long-term).
+
+--------------------------------------------------------------------------------

@@ -4,4 +4,6 @@ h5py
 matplotlib
 tqdm
 ipykernel
+einops
+
 

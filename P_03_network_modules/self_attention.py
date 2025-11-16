@@ -8,33 +8,42 @@ import einops as eo
 
     
 class SDPAttentionKernel(nn.Module):
-    # TODO: modify naming a bit for crossatttention
     """ just the dot product fc graph attention operation in isolation. can be used for all other attention layers """
     
-    def __init__(self, softmax_temp: float = 1.0, att_drop: float = 0.1):
-        
+    def __init__(self, d_residual: int, d_k: int, d_v: int=None, att_drop: float=0.1):
         """
         Args:
-            softmax_temp (float, optional): scaling the attention weights before softmax
-            att_dropout (float, optional): dropout after the softmax
+            d_residual (int): residual stream embedding dimension
+            d_k (int):        query and key embedding dimension
+            d_v (int):        value embedding dimension (typically = d_k)
+            att_drop (float): dropout rate for attention weights
         """
         super().__init__()
         
-        self.softmax_temp = softmax_temp
-        self.dropout      = nn.Dropout(att_drop)
-        self.softmax      = nn.Softmax(dim = 2) # softmax is over rows of attention weights!
+        if d_v is None:
+            d_v = d_k # this is the standard, but technically not constrained
+        self.softmax_temp = d_k**0.5
         
-    def forward(self, Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor, MSK: torch.Tensor = None) -> torch.Tensor:
+        self.w_q = nn.Linear(d_residual, d_k)
+        self.w_k = nn.Linear(d_residual, d_k)
+        self.w_v = nn.Linear(d_residual, d_v)
+        self.w_o = nn.Linear(d_v, d_residual)
+         
+        self.dropout = nn.Dropout(att_drop)
+        self.softmax = nn.Softmax(dim=2) # softmax is over rows of attention weights!
+        
+    def forward(self, X: torch.Tensor, MSK: torch.Tensor=None) -> torch.Tensor:
         """
         Args:
-            Q   (`torch.Tensor`): query matrix; `dim[Batch, seqLen, d_k]`
-            K   (`torch.Tensor`): key   matrix; `dim[Batch, seqLen, d_k]`
-            V   (`torch.Tensor`): value matrix; `dim[Batch, seqLen, d_v]`
-            MSK (`torch.Tensor`): bool mask for the attention weights; broadcastable to `dim[Batch, seqLen, seqLen]`
-
+            X (torch.Tensor):   input residual stream, `dims[batch, seq_len, d_residual]`
+            MSK (torch.Tensor): optionsal bool mask, broadcastable to `dims[batch, seq_len, seq_len]`
         Returns:
-            torch.Tensor: context vectors: `dim[Batch, seqLen, d_v]`
+            torch.Tensor: output residual stream, `dims[batch, seq_len, d_residual]`
         """
+
+        Q = self.w_q(X)
+        K = self.w_k(X)
+        V = self.w_v(X)
         
         ATTW = torch.einsum("Bij, Bkj -> Bik", [Q, K]) # matmul is faster! but syntax is worse
         ATTW = ATTW / self.softmax_temp
@@ -43,23 +52,36 @@ class SDPAttentionKernel(nn.Module):
         ATTW = self.softmax(ATTW)
         ATTW = self.dropout(ATTW)
         CTXT = torch.einsum("Bij, Bjk -> Bik", [ATTW, V]) # matmul is faster! but syntax is worse  
+        
+        X = self.w_o(CTXT)
 
-        return CTXT
+        return X
 
 class MLP(nn.Module):
-    " the fully connected layer that follows dot product attention"
+    " the fully connected layer that follows dot product attention. MLP is applied elementwise"
     
-    def __init__(self, input_features: int, hidden_features: int, mlp_drop: float = 0.1):
-        
+    def __init__(self, d_residual: int, d_hidden: int, mlp_drop: float=0.1):
+        """
+        Args:
+            d_residual (int):           residual stream embedding dimension
+            d_hidden (int):             dimension of the intermediate mlp layer, typically 4*d_residual
+            mlp_drop (float, optional): dropout rate for the first mlp layer
+        """
         super().__init__()
         
-        self.fc_up = nn.Linear(input_features, hidden_features)
-        self.fc_dw = nn.Linear(hidden_features, input_features)
+        self.fc_up = nn.Linear(d_residual, d_hidden)
+        self.fc_dw = nn.Linear(d_hidden, d_residual)
         
         self.activation = nn.GELU()
         self.dropout = nn.Dropout(mlp_drop)
         
     def forward(self, X: torch.Tensor) -> torch.Tensor:
+        """
+        Args:
+            X (torch.Tensor): input residual stream, `dims[batch, seq_len, d_residual]`
+        Returns:
+            torch.Tensor: otuput residual stream, `dims[batch, seq_len, d_residual]`
+        """
         
         X = self.fc_up(X)
         X = self.activation(X)
@@ -71,22 +93,25 @@ class MLP(nn.Module):
 class LayerNorm(nn.Module):
     """ layer norm acts independent on each element of the sequence (of each batch) """
     
-    def __init__(self, input_features: int):
+    def __init__(self, d_residual: int):
+        """
+        Args:
+            d_residual (int): residual stream embedding dimension
+        """
         super().__init__()
         
         self.eps   = 1e-8
         
-        self.gamma = nn.Parameter(torch.ones([input_features]))
-        self.beta  = nn.Parameter(torch.zeros([input_features]))
+        self.gamma = nn.Parameter(torch.ones([d_residual]))
+        self.beta  = nn.Parameter(torch.zeros([d_residual]))
     
 
     def forward(self, X: torch.Tensor) -> torch.Tensor:
         """
         Args:
-            x (torch.Tensor): residual stream input; `dim[Batch, seqLen, embeddFeats]`
-
+            X (torch.Tensor): input residual stream, `dims[batch, seq_len, d_residual]`
         Returns:
-            torch.Tensor: normalized residual stream; `dim[Batch, seqLen, embeddFeats]`
+            torch.Tensor: output normalized residual stream, `dims[batch, seq_len, d_residual]`
         """
         
         X = X - eo.reduce(X, "B s e -> B s 1", "mean") # shift by mean
@@ -95,38 +120,37 @@ class LayerNorm(nn.Module):
         
         return X
         
-class SelfAttention(nn.Module):
-    def __init__(self, input_features, d_k, d_v = None, att_drop = 0.1, mlp_drop = 0.1, res_drop = 0.1) -> None:
+class AttentionBlock(nn.Module):
+    def __init__(self, d_residual, d_k, d_v=None, att_drop=0.1, mlp_drop=0.1, res_drop=0.1) -> None:
+        """
+        Args:
+            d_residual (_type_): residual stream embedding dimension 
+            d_k (_type_):        query and key embedding dimension
+            d_v (_type_):        value embedding dimension (typically = d_k)
+            att_drop (float):    dropout rate for attention weights
+            mlp_drop (float):    dropout rate for the first mlp layer
+            res_drop (float):    dropout rate for residual connections
+        """
         super().__init__()
         
-        if d_v is None:
-            d_v = d_k # this is the standard, but technically not constrained
-            
-        self.input_features = input_features
-        self.d_k = d_k
-        self.d_v = d_v
-        
-        self.w_q = nn.Linear(input_features, d_k)
-        self.w_k = nn.Linear(input_features, d_k)
-        self.w_v = nn.Linear(input_features, d_v)
-        self.w_z = nn.Linear(d_v, input_features)
-        
-        self.sdp_attention  = SDPAttentionKernel(softmax_temp = d_k**0.5, att_drop = att_drop)
-        self.layer_norm_att = LayerNorm(input_features)
-        self.layer_norm_mlp = LayerNorm(input_features)
-        self.ff_mlp         = MLP(input_features, 4*input_features, mlp_drop = mlp_drop)
+        self.sdp_attention  = SDPAttentionKernel(d_residual, d_k, d_v=d_v, att_drop=att_drop)
+        self.layer_norm_att = LayerNorm(d_residual)
+        self.layer_norm_mlp = LayerNorm(d_residual)
+        self.ff_mlp         = MLP(d_residual, 4*d_residual, mlp_drop=mlp_drop)
         self.dropout        = nn.Dropout(res_drop)
     
-    def forward(self, RES: torch.Tensor, MSK: torch.Tensor = None) -> torch.Tensor:
+    def forward(self, RES: torch.Tensor, MSK: torch.Tensor=None) -> torch.Tensor:
+        """ 
+        Args:
+            RES (torch.Tensor): input residual stream, `dims[batch, seq_len, d_residual]`
+            MSK (torch.Tensor): optionsal bool mask, broadcastable to `dims[batch, seq_len, seq_len]`
+
+        Returns:
+            torch.Tensor: output residual stream, `dims[batch, seq_len, d_residual]`
+        """
         
         X = self.layer_norm_att(RES)
-        
-        Q = self.w_q(X)
-        K = self.w_k(X)
-        V = self.w_v(X)
-        CTXT = self.sdp_attention(Q, K, V, MSK = MSK)
-        X = self.w_z(CTXT)
-        
+        X = self.sdp_attention(X, MSK=MSK)
         X = self.dropout(X)
         RES = RES + X
         
@@ -136,11 +160,6 @@ class SelfAttention(nn.Module):
         RES = RES + X
         
         return RES
-
-
-
-
-
 
 class MultiHeadSelfAttention(nn.Module):
     pass
@@ -153,18 +172,13 @@ class MultiHeadSelfAttention(nn.Module):
 if __name__ == "__main__":
     os.system("cls" if os.name == "nt" else "clear")
     
-    q = torch.rand(2, 8, 6)
-    k = torch.rand(2, 8, 6)
-    v = torch.rand(2, 8, 4)
+    sm = nn.Softmax(dim=2)
+    A = torch.rand(2, 5, 5)
+    A = sm(A)
     
-    mask = torch.eye(8)
+    print(A)
     
-    net = SDPAttentionKernel()
-    out = net(q, k, v, mask)
-    
-    norm = LayerNorm(4)    
-
-
+    print(A.sum(dim=2))
     
 
 

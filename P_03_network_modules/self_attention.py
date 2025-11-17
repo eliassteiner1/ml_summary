@@ -7,7 +7,7 @@ import numpy as np
 import einops as eo
 
     
-class SDPAttentionKernel(nn.Module):
+class SingleHeadSDPAttentionKernel(nn.Module):
     """ just the dot product fc graph attention operation in isolation. can be used for all other attention layers """
     
     def __init__(self, d_residual: int, d_k: int, d_v: int=None, att_drop: float=0.1):
@@ -56,6 +56,65 @@ class SDPAttentionKernel(nn.Module):
         X = self.w_o(CTXT)
 
         return X
+
+class MultiHeadSDPAttentionKernel(nn.Module):
+    """ just the dot product fc graph attention operation in isolation. can be used for all other attention layers """
+    
+    def __init__(self, d_residual: int, d_k: int, d_v: int=None, n_heads: int=2, att_drop: float=0.1):
+
+        super().__init__()
+        
+        if d_v is None:
+            d_v = d_k # this is the standard, but technically not constrained
+        self.softmax_temp = d_k**0.5
+        
+        if d_k % n_heads != 0:
+            raise ValueError()
+        if d_v % n_heads != 0:
+            raise ValueError()
+        
+        self.d_k     = d_k
+        self.d_v     = d_v
+        self.n_heads = n_heads
+        self.d_kh    = int(d_k / n_heads)
+        self.d_vh    = int(d_v / n_heads)
+        
+        self.w_q = nn.Linear(d_residual, d_k)
+        self.w_k = nn.Linear(d_residual, d_k)
+        self.w_v = nn.Linear(d_residual, d_v)
+        self.w_o = nn.Linear(d_v, d_residual)
+         
+        self.dropout = nn.Dropout(att_drop)
+        self.softmax = nn.Softmax(dim=2) # softmax is over rows of attention weights! #TODO: watch out for dim!
+        
+    def forward(self, X: torch.Tensor, MSK: torch.Tensor=None) -> torch.Tensor:
+
+        Q = self.w_q(X)
+        K = self.w_k(X)
+        V = self.w_v(X)
+        
+        
+        print(Q.shape)
+        
+        Q = eo.rearrange(Q, "B s (H d_kh) -> B s H d_kh", H=self.n_heads, d_kh=self.d_kh)
+        
+        
+        print(aaa.shape)
+        
+        
+        ATTW = torch.einsum("Bij, Bkj -> Bik", [Q, K]) # matmul is faster! but syntax is worse
+        ATTW = ATTW / self.softmax_temp
+        if MSK is not None:
+            ATTW = ATTW.masked_fill(MSK.bool(), float("-inf"))
+        ATTW = self.softmax(ATTW)
+        ATTW = self.dropout(ATTW)
+        CTXT = torch.einsum("Bij, Bjk -> Bik", [ATTW, V]) # matmul is faster! but syntax is worse  
+        
+        X = self.w_o(CTXT)
+
+        return X
+
+
 
 class MLP(nn.Module):
     " the fully connected layer that follows dot product attention. MLP is applied elementwise"
@@ -133,7 +192,7 @@ class AttentionBlock(nn.Module):
         """
         super().__init__()
         
-        self.sdp_attention  = SDPAttentionKernel(d_residual, d_k, d_v=d_v, att_drop=att_drop)
+        self.sdp_attention  = SingleHeadSDPAttentionKernel(d_residual, d_k, d_v=d_v, att_drop=att_drop)
         self.layer_norm_att = LayerNorm(d_residual)
         self.layer_norm_mlp = LayerNorm(d_residual)
         self.ff_mlp         = MLP(d_residual, 4*d_residual, mlp_drop=mlp_drop)
@@ -161,10 +220,6 @@ class AttentionBlock(nn.Module):
         
         return RES
 
-class MultiHeadSelfAttention(nn.Module):
-    pass
-
-
 
     
     
@@ -172,13 +227,8 @@ class MultiHeadSelfAttention(nn.Module):
 if __name__ == "__main__":
     os.system("cls" if os.name == "nt" else "clear")
     
-    sm = nn.Softmax(dim=2)
-    A = torch.rand(2, 5, 5)
-    A = sm(A)
-    
-    print(A)
-    
-    print(A.sum(dim=2))
-    
+    net = MultiHeadSDPAttentionKernel(64, 64, n_heads=2)
+    x = torch.rand(5, 100, 64)
+    out = net(x) 
 
 

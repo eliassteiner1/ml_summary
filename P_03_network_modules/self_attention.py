@@ -7,7 +7,7 @@ import numpy as np
 import einops as eo
 
     
-class SingleHeadSDPAttentionKernel(nn.Module):
+class SingleHeadAttentionKernel(nn.Module):
     """ just the dot product fc graph attention operation in isolation. can be used for all other attention layers """
     
     def __init__(self, d_residual: int, d_k: int, d_v: int=None, att_drop: float=0.1):
@@ -57,7 +57,7 @@ class SingleHeadSDPAttentionKernel(nn.Module):
 
         return X
 
-class MultiHeadSDPAttentionKernel(nn.Module):
+class MultiHeadAttentionKernel(nn.Module):
     """ just the dot product fc graph attention operation in isolation. can be used for all other attention layers """
     
     def __init__(self, d_residual: int, d_k: int, d_v: int=None, n_heads: int=2, att_drop: float=0.1):
@@ -85,34 +85,34 @@ class MultiHeadSDPAttentionKernel(nn.Module):
         self.w_o = nn.Linear(d_v, d_residual)
          
         self.dropout = nn.Dropout(att_drop)
-        self.softmax = nn.Softmax(dim=2) # softmax is over rows of attention weights! #TODO: watch out for dim!
+        self.softmax = nn.Softmax(dim=3) # softmax is over rows of attention weights! #TODO: watch out for dim!
         
     def forward(self, X: torch.Tensor, MSK: torch.Tensor=None) -> torch.Tensor:
+        # MSK broadcastable to [Batch, N_head, seq_len, seq_len]. likely this will be either 
+        # [1, 1, seq_len, seq_len] or [Batch, 1, seq_len, seq_len] but different mask for heads never makes sense..
 
         Q = self.w_q(X)
         K = self.w_k(X)
         V = self.w_v(X)
         
+        Q = eo.rearrange(Q, "B s (H d_kh) -> B H s d_kh", H=self.n_heads, d_kh=self.d_kh)
+        K = eo.rearrange(K, "B s (H d_kh) -> B H s d_kh", H=self.n_heads, d_kh=self.d_kh)
+        V = eo.rearrange(V, "B s (H d_vh) -> B H s d_vh", H=self.n_heads, d_vh=self.d_vh)
         
-        print(Q.shape)
-        
-        Q = eo.rearrange(Q, "B s (H d_kh) -> B s H d_kh", H=self.n_heads, d_kh=self.d_kh)
-        
-        
-        print(aaa.shape)
-        
-        
-        ATTW = torch.einsum("Bij, Bkj -> Bik", [Q, K]) # matmul is faster! but syntax is worse
+        ATTW = torch.einsum("BHid, BHjd -> BHij", [Q, K]) 
         ATTW = ATTW / self.softmax_temp
         if MSK is not None:
             ATTW = ATTW.masked_fill(MSK.bool(), float("-inf"))
         ATTW = self.softmax(ATTW)
         ATTW = self.dropout(ATTW)
-        CTXT = torch.einsum("Bij, Bjk -> Bik", [ATTW, V]) # matmul is faster! but syntax is worse  
+        CTXT = torch.einsum("BHij, BHjk -> BHik", [ATTW, V])
+        CTXT = eo.rearrange(CTXT, "B H s d_vh -> B s (H d_vh)")
         
         X = self.w_o(CTXT)
+        
+        return X 
+         
 
-        return X
 
 
 
@@ -192,7 +192,7 @@ class AttentionBlock(nn.Module):
         """
         super().__init__()
         
-        self.sdp_attention  = SingleHeadSDPAttentionKernel(d_residual, d_k, d_v=d_v, att_drop=att_drop)
+        self.sdp_attention  = SingleHeadAttentionKernel(d_residual, d_k, d_v=d_v, att_drop=att_drop)
         self.layer_norm_att = LayerNorm(d_residual)
         self.layer_norm_mlp = LayerNorm(d_residual)
         self.ff_mlp         = MLP(d_residual, 4*d_residual, mlp_drop=mlp_drop)
@@ -227,8 +227,15 @@ class AttentionBlock(nn.Module):
 if __name__ == "__main__":
     os.system("cls" if os.name == "nt" else "clear")
     
-    net = MultiHeadSDPAttentionKernel(64, 64, n_heads=2)
+    net_normal = MLP(64, 512)
+    net_compile = MLP(64, 512)
+    net_compile.compile()
+    
     x = torch.rand(5, 100, 64)
-    out = net(x) 
+    out = net_compile(x) 
+    print(out.shape)
 
+
+    
+    
 

@@ -227,13 +227,7 @@ class AttentionBlock(nn.Module):
 if __name__ == "__main__":
     os.system("cls" if os.name == "nt" else "clear")
     
-    net_normal = MLP(64, 512)
-    net_compile = MLP(64, 512)
-    net_compile.compile()
-    
-    x = torch.rand(5, 100, 64)
-    out = net_compile(x) 
-    print(out.shape)
+
 
 
     

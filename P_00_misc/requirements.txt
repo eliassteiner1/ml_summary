@@ -1,9 +1,0 @@
-pytorch (with cuda support) [https://pytorch.org/get-started/locally/¨]
-numpy
-h5py
-matplotlib
-tqdm
-ipykernel
-einops
-
-

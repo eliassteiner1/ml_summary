@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ml-exploration"
+version = "0.1.0"
+description = "many ml-related things and concepts collected in one place for (my own) easy reference"
+authors = [
+    {name = "Elias Steiner", email = "elias.steiner@gmx.ch"}
+]
+license = { file = "LICENSE" }
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+]
+
+[project.urls]
+Homepage = "https://github.com/eliassteiner1/ml-exploration"
+
+[project.scripts]

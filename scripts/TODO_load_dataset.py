@@ -26,7 +26,7 @@ if __name__ == "__main__":
     mysampler = MyScheduledBatchSampler(myset, bs_sched, shuffle=True)
     myloader  = DataLoader(
         dataset=myset, 
-        sampler=mysampler, 
+        batch_sampler=mysampler, 
         collate_fn=my_collate_fn, 
         num_workers=0, 
         pin_memory=True

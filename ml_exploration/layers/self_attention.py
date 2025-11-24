@@ -110,11 +110,7 @@ class MultiHeadAttentionKernel(nn.Module):
         
         X = self.w_o(CTXT)
         
-        return X 
-         
-
-
-
+        return X
 
 class MLP(nn.Module):
     " the fully connected layer that follows dot product attention. MLP is applied elementwise"

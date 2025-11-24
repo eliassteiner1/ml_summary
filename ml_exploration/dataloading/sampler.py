@@ -40,6 +40,7 @@ class MySampler(Sampler):
         else:
             return math.ceil(self.num_samples / self.batch_size)
 
+
 class MyScheduledBatchSampler(Sampler):
     """ this class implements a simple batch sampler with batch size scheduling (custom input) """
     

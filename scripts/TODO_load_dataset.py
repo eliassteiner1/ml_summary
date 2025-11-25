@@ -22,11 +22,11 @@ if __name__ == "__main__":
         data = file["data"][()]
     
     myset     = MyDataset(data)
-    bs_sched  = 2*[4] + 2*[8] # needs just a list of batch sizes, and this is a convenient way to construct
+    bs_sched  = 1*[4] + 1*[8] # needs just a list of batch sizes, and this is a convenient way to construct
     mysampler = MyScheduledBatchSampler(myset, bs_sched, shuffle=True)
     myloader  = DataLoader(
         dataset=myset, 
-        batch_sampler=mysampler, 
+        batch_sampler=mysampler, # watch out, my sampler is a batch sampler
         collate_fn=my_collate_fn, 
         num_workers=0, 
         pin_memory=True
@@ -34,4 +34,5 @@ if __name__ == "__main__":
 
     onebatch = next(iter(myloader))
     onebatch.to("cuda:0")
-    print(onebatch["label"])
+    print(onebatch["image"].shape)
+    
